@@ -1,20 +1,17 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["flit_core >=3.2,<4"]
+build-backend = "flit_core.buildapi"
 
 [project]
-name = "agy-account-switch"
-version = "0.2.0"
-description = "Encrypted multi‑account switcher for Antigravity CLI"
-authors = [{name = "Tekotechkotech", email = "admin@faizen.biz"}]
+name = "agy_account_switch"
+dynamic = ["version", "description"]
+authors = [{name = "tekotechkotech", email = "faizen@example.com"}]
 readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
-dependencies = ["keyring>=23.0.0"]
+dependencies = [
+    "keyring>=23.0.0",
+]
 
-[tool.setuptools]
-packages = {find = {where = ["agy_account_switch"]}}
-
-# Editable install support (PEP‑660)
-[tool.setuptools.editable]
-mode = "editable"
+[project.scripts]
+agy-account = "agy_account_switch.agy_account_cli:main"

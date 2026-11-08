@@ -1,5 +1,7 @@
 """AGY Account Switch with OpenSSL-based AES-256-CBC Encryption."""
 
+__version__ = "0.2.0"
+
 from .encryption import (
     _get_key,
     encrypt_token,
