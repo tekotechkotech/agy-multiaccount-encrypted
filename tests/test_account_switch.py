@@ -8,9 +8,11 @@ overridden to point to an isolated temporary directory during testing.
 """
 
 import os
+import json
 import shutil
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 # Absolute import using the package namespace
 from agy_account_switch.account_switch import (
@@ -18,6 +20,8 @@ from agy_account_switch.account_switch import (
     list_accounts,
     switch_account,
     remove_account,
+    capture_account,
+    login_account,
     _token_file_path,
 )
 from agy_account_switch.encryption import is_encrypted
@@ -121,6 +125,167 @@ class AccountSwitchTest(unittest.TestCase):
     def test_switch_nonexistent_account(self):
         with self.assertRaises(FileNotFoundError):
             switch_account("does-not-exist")
+
+    def test_capture_account_with_json_and_email(self):
+        token_payload = {
+            "token": "ya29.sample_oauth_access_token_12345",
+            "auth_method": "oauth",
+            "id_token_email": "engineer@bomasix.sch.id",
+        }
+        self.active_token_file.write_text(json.dumps(token_payload), encoding="utf-8")
+
+        result = capture_account("bomasix-eng")
+        self.assertEqual(
+            result,
+            {
+                "account": "bomasix-eng",
+                "email": "engineer@bomasix.sch.id",
+                "encrypted": False,
+            },
+        )
+
+        # Check account was saved
+        token_file = _token_file_path("bomasix-eng")
+        self.assertTrue(token_file.is_file())
+        self.assertEqual(oct(token_file.stat().st_mode)[-3:], "600")
+        saved_data = json.loads(token_file.read_text(encoding="utf-8"))
+        self.assertEqual(saved_data["id_token_email"], "engineer@bomasix.sch.id")
+
+        # Current account indicator updated
+        self.assertEqual(self.current_account_file.read_text(encoding="utf-8").strip(), "bomasix-eng")
+
+    def test_capture_account_encrypted(self):
+        token_payload = {
+            "token": "ya29.encrypted_secret_token",
+            "id_token_email": "admin@bomasix.sch.id",
+        }
+        token_str = json.dumps(token_payload)
+        self.active_token_file.write_text(token_str, encoding="utf-8")
+
+        result = capture_account("bomasix-admin", encrypt=True)
+        self.assertEqual(result["account"], "bomasix-admin")
+        self.assertEqual(result["email"], "admin@bomasix.sch.id")
+        self.assertTrue(result["encrypted"])
+
+        # Check storage is encrypted
+        token_file = _token_file_path("bomasix-admin")
+        self.assertTrue(token_file.is_file())
+        stored_raw = token_file.read_text(encoding="utf-8").strip()
+        self.assertTrue(is_encrypted(stored_raw))
+
+        # Switch to it and ensure proper decryption into active file
+        switch_account("bomasix-admin")
+        self.assertEqual(self.active_token_file.read_text(encoding="utf-8").strip(), token_str)
+
+    def test_capture_nonexistent_or_empty_token(self):
+        if self.active_token_file.exists():
+            self.active_token_file.unlink()
+
+        # Non-existent file should raise FileNotFoundError
+        with self.assertRaises(FileNotFoundError):
+            capture_account("missing")
+
+        # Empty file should raise ValueError
+        self.active_token_file.write_text("   \n", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            capture_account("empty")
+
+    def test_capture_overwrite_behavior(self):
+        token1 = json.dumps({"token": "first-token", "id_token_email": "first@example.com"})
+        token2 = json.dumps({"token": "second-token", "id_token_email": "second@example.com"})
+
+        self.active_token_file.write_text(token1, encoding="utf-8")
+        capture_account("my-acct")
+
+        # Overwrite without flag must fail
+        self.active_token_file.write_text(token2, encoding="utf-8")
+        with self.assertRaises(FileExistsError):
+            capture_account("my-acct", overwrite=False)
+
+        # Overwrite with flag must succeed and back up old token
+        res = capture_account("my-acct", overwrite=True)
+        self.assertEqual(res["email"], "second@example.com")
+        token_file = _token_file_path("my-acct")
+        saved = json.loads(token_file.read_text(encoding="utf-8"))
+        self.assertEqual(saved["token"], "second-token")
+
+        # Check backup exists
+        backups = list(self.token_dir.glob("my-acct.token.bak.*"))
+        self.assertTrue(len(backups) >= 1)
+
+    def test_login_account_success(self):
+        initial_token = "old-active-token"
+        self.active_token_file.write_text(initial_token, encoding="utf-8")
+
+        new_token_payload = json.dumps({
+            "token": "new-login-token-999",
+            "id_token_email": "logged_in@example.com",
+        })
+
+        def fake_subprocess_call(cmd):
+            # Simulate browser login writing new active token
+            self.active_token_file.write_text(new_token_payload, encoding="utf-8")
+            return 0
+
+        with patch("subprocess.call", side_effect=fake_subprocess_call):
+            res = login_account("newly-logged", agy_bin="fake-agy")
+
+        self.assertEqual(res["account"], "newly-logged")
+        self.assertEqual(res["email"], "logged_in@example.com")
+        self.assertEqual(self.current_account_file.read_text(encoding="utf-8").strip(), "newly-logged")
+
+        # Token file was stored
+        saved_file = _token_file_path("newly-logged")
+        self.assertTrue(saved_file.is_file())
+        self.assertEqual(saved_file.read_text(encoding="utf-8").strip(), new_token_payload)
+
+    def test_login_account_failure_restores_backup(self):
+        original_active = "original-precious-active-token"
+        self.active_token_file.write_text(original_active, encoding="utf-8")
+
+        def fake_aborted_call(cmd):
+            # User closed browser, token not written
+            return 1
+
+        with patch("subprocess.call", side_effect=fake_aborted_call):
+            with self.assertRaises(RuntimeError):
+                login_account("aborted-login", agy_bin="fake-agy")
+
+        # Original token must be restored
+        self.assertTrue(self.active_token_file.is_file())
+        self.assertEqual(self.active_token_file.read_text(encoding="utf-8"), original_active)
+        # Account file should NOT exist
+        self.assertFalse(_token_file_path("aborted-login").exists())
+
+    def test_cli_capture_and_add_from_current(self):
+        from agy_account_switch.agy_account_cli import main as cli_main
+
+        token_payload = json.dumps({
+            "token": "cli-captured-token-123",
+            "id_token_email": "cli@example.com",
+        })
+        self.active_token_file.write_text(token_payload, encoding="utf-8")
+
+        # 1. Test direct subcommand `capture <name>`
+        cli_main(["capture", "cli-cap"])
+        self.assertTrue(_token_file_path("cli-cap").is_file())
+        self.assertEqual(self.current_account_file.read_text(encoding="utf-8").strip(), "cli-cap")
+
+        # 2. Test alias `add <name> --from-current`
+        cli_main(["add", "cli-alias", "--from-current", "--encrypt"])
+        self.assertTrue(_token_file_path("cli-alias").is_file())
+        raw = _token_file_path("cli-alias").read_text(encoding="utf-8").strip()
+        self.assertTrue(is_encrypted(raw))
+
+        # 3. Test `account capture <name> --force`
+        cli_main(["account", "capture", "cli-cap", "--force"])
+        self.assertEqual(self.current_account_file.read_text(encoding="utf-8").strip(), "cli-cap")
+
+    def test_cli_add_missing_token_error(self):
+        from agy_account_switch.agy_account_cli import main as cli_main
+        with self.assertRaises(SystemExit) as cm:
+            cli_main(["add", "missing-tok"])
+        self.assertEqual(cm.exception.code, 1)
 
 
 if __name__ == "__main__":

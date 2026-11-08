@@ -8,6 +8,8 @@ try:
         list_accounts,
         switch_account,
         remove_account,
+        capture_account,
+        login_account,
     )
 except ImportError:
     from .account_switch import (
@@ -15,6 +17,8 @@ except ImportError:
         list_accounts,
         switch_account,
         remove_account,
+        capture_account,
+        login_account,
     )
 
 
@@ -34,10 +38,33 @@ def register_account_subcommand(parser_or_subparsers) -> None:
     # add
     add_parser = subparsers.add_parser('add', help='Add a new account token')
     add_parser.add_argument('name', help='Logical account name')
-    add_parser.add_argument('token', help='Authentication token string')
-    add_parser.add_argument('--overwrite', action='store_true', help='Overwrite existing token')
+    add_parser.add_argument('token', nargs='?', default=None, help='Authentication token string (omit if using --from-current)')
+    add_parser.add_argument('--from-current', action='store_true', help='Capture token from currently active Antigravity session')
+    add_parser.add_argument('--force', '--overwrite', dest='overwrite', action='store_true', help='Overwrite existing token')
     add_parser.add_argument('--encrypt', action='store_true', help='Encrypt the token before storing')
     add_parser.set_defaults(func=_handle_add)
+
+    # capture
+    capture_parser = subparsers.add_parser(
+        'capture',
+        help='Capture the currently active browser session / OAuth token into an account',
+        description='Capture the currently active browser session / OAuth token into account <name>.'
+    )
+    capture_parser.add_argument('name', help='Logical account name')
+    capture_parser.add_argument('--encrypt', action='store_true', help='Encrypt the token before storing')
+    capture_parser.add_argument('--force', '--overwrite', dest='overwrite', action='store_true', help='Overwrite existing account token')
+    capture_parser.set_defaults(func=_handle_capture)
+
+    # login
+    login_parser = subparsers.add_parser(
+        'login',
+        help='Launch Antigravity interactive browser login and save credentials as an account',
+        description='Launch Antigravity interactive browser login and save credentials as account <name>.'
+    )
+    login_parser.add_argument('name', help='Logical account name')
+    login_parser.add_argument('--encrypt', action='store_true', help='Encrypt the token before storing')
+    login_parser.add_argument('--force', '--overwrite', dest='overwrite', action='store_true', help='Overwrite existing account token')
+    login_parser.set_defaults(func=_handle_login)
 
     # list
     list_parser = subparsers.add_parser('list', help='List stored accounts')
@@ -57,11 +84,50 @@ def register_account_subcommand(parser_or_subparsers) -> None:
 def _handle_add(args: argparse.Namespace) -> None:
     try:
         encrypt = getattr(args, 'encrypt', False)
-        add_account(args.name, args.token, overwrite=args.overwrite, encrypt=encrypt)
+        overwrite = getattr(args, 'overwrite', False)
+        from_current = getattr(args, 'from_current', False)
+        if from_current:
+            info = capture_account(args.name, encrypt=encrypt, overwrite=overwrite)
+            status = " (encrypted)" if info.get("encrypted") else ""
+            email_info = f" [{info['email']}]" if info.get("email") else ""
+            print(f"Captured active session into account '{args.name}'{email_info}{status}.")
+            return
+
+        if not args.token:
+            print("Error: 'token' argument is required unless --from-current is specified.", file=sys.stderr)
+            sys.exit(1)
+
+        add_account(args.name, args.token, overwrite=overwrite, encrypt=encrypt)
         status = " (encrypted)" if encrypt else ""
         print(f"Account '{args.name}' added successfully{status}.")
     except Exception as e:
         print(f"Error adding account: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _handle_capture(args: argparse.Namespace) -> None:
+    try:
+        encrypt = getattr(args, 'encrypt', False)
+        overwrite = getattr(args, 'overwrite', False)
+        info = capture_account(args.name, encrypt=encrypt, overwrite=overwrite)
+        status = " (encrypted)" if info.get("encrypted") else ""
+        email_info = f" [{info['email']}]" if info.get("email") else ""
+        print(f"Captured active session into account '{args.name}'{email_info}{status}.")
+    except Exception as e:
+        print(f"Error capturing account: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _handle_login(args: argparse.Namespace) -> None:
+    try:
+        encrypt = getattr(args, 'encrypt', False)
+        overwrite = getattr(args, 'overwrite', False)
+        info = login_account(args.name, encrypt=encrypt, overwrite=overwrite)
+        status = " (encrypted)" if info.get("encrypted") else ""
+        email_info = f" [{info['email']}]" if info.get("email") else ""
+        print(f"Successfully logged in and saved account '{args.name}'{email_info}{status}.")
+    except Exception as e:
+        print(f"Error during interactive login: {e}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -99,7 +165,7 @@ def main(argv=None) -> None:
 
     # Allow direct subcommand invocation like `agy_account add ...` as well as `agy_account account add ...`
     args_list = list(sys.argv[1:] if argv is None else argv)
-    if args_list and args_list[0] in {'add', 'list', 'switch', 'remove'}:
+    if args_list and args_list[0] in {'add', 'list', 'switch', 'remove', 'capture', 'login'}:
         args_list.insert(0, 'account')
 
     parsed = parser.parse_args(args_list)

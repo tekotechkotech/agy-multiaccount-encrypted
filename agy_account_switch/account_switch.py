@@ -1,7 +1,9 @@
 import os
+import sys
 import json
 import logging
 import shutil
+import subprocess
 from pathlib import Path
 from datetime import datetime
 
@@ -175,3 +177,109 @@ def remove_account(account: str) -> None:
     _backup_file(token_path)
     token_path.unlink()
     logging.info("Removed account %s", account)
+
+
+def capture_account(name: str, encrypt: bool = False, overwrite: bool = False) -> dict:
+    """Capture the active Antigravity session/OAuth token into a named account profile.
+
+    Args:
+        name: Logical name for the account.
+        encrypt: If True, stores the token encrypted.
+        overwrite: If True, allows overwriting an existing account.
+
+    Returns:
+        A dict with account info: {"account": name, "email": email, "encrypted": encrypt}
+    """
+    act_file = _active_token_file()
+    if not act_file.is_file():
+        raise FileNotFoundError(f"Active token file not found at '{act_file}'")
+
+    token_content = act_file.read_text(encoding="utf-8").strip()
+    if not token_content:
+        raise ValueError("Active token file is empty")
+
+    email = None
+    try:
+        data = json.loads(token_content)
+        if isinstance(data, dict):
+            email = data.get("id_token_email") or data.get("email")
+    except Exception:
+        email = None
+
+    add_account(name, token_content, overwrite=overwrite, encrypt=encrypt)
+
+    cur_file = _current_account_file()
+    cur_file.parent.mkdir(parents=True, exist_ok=True)
+    cur_file.write_text(name, encoding="utf-8")
+
+    logging.info("Captured active token into account %s (email=%s, encrypted=%s)", name, email, encrypt)
+    return {
+        "account": name,
+        "email": email,
+        "encrypted": encrypt,
+    }
+
+
+def login_account(
+    name: str,
+    encrypt: bool = False,
+    overwrite: bool = False,
+    agy_bin: str | None = None,
+) -> dict:
+    """Launch Antigravity interactive browser login and capture credentials as a named account.
+
+    Args:
+        name: Logical name for the account.
+        encrypt: If True, stores the token encrypted.
+        overwrite: If True, allows overwriting an existing account.
+        agy_bin: Path to the agy binary. Defaults to system or home bin agy.
+
+    Returns:
+        A dict with account info: {"account": name, "email": email, "encrypted": encrypt}
+    """
+    _sanitize_account_name(name)
+    token_path = _token_file_path(name)
+    if token_path.exists() and not overwrite:
+        raise FileExistsError(f"Token file for account '{name}' already exists.")
+
+    if agy_bin is None:
+        agy_bin = os.getenv("AGY_BIN") or shutil.which("agy") or str(Path.home() / ".local" / "bin" / "agy")
+
+    act_file = _active_token_file()
+    had_active = act_file.is_file()
+    saved_active_content = None
+
+    if had_active:
+        saved_active_content = act_file.read_text(encoding="utf-8")
+        _backup_file(act_file)
+        act_file.unlink()
+
+    print(f"Starting browser authentication for account '{name}'...")
+    print(f"Executing '{agy_bin} models' to trigger browser OAuth flow...")
+    sys.stdout.flush()
+
+    try:
+        ret = subprocess.call([str(agy_bin), "models"])
+        # Check if active token was populated
+        if act_file.is_file() and act_file.read_text(encoding="utf-8").strip():
+            result = capture_account(name, encrypt=encrypt, overwrite=overwrite)
+            logging.info("Interactive login succeeded for account %s", name)
+            return result
+        else:
+            raise RuntimeError("Interactive login failed or was cancelled: OAuth token was not generated.")
+    except BaseException:
+        # Restore previous active token if available
+        if had_active and saved_active_content is not None:
+            act_file.write_text(saved_active_content, encoding="utf-8")
+            try:
+                act_file.chmod(0o600)
+            except Exception:
+                pass
+            logging.info("Restored previous active token after aborted/failed login.")
+        elif act_file.is_file() and not act_file.read_text(encoding="utf-8").strip():
+            try:
+                act_file.unlink()
+            except Exception:
+                pass
+        raise
+

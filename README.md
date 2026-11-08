@@ -7,6 +7,7 @@ Multi-account manager with OpenSSL AES-256-CBC encryption and HMAC integrity ver
 ## Features
 
 - **Multi-Account Profile Management:** Easily add, list, switch, and delete multiple Antigravity authentication profiles.
+- **Browser-Based OAuth & Zero Copy-Paste:** Interactively authenticate new accounts directly via Google OAuth in your browser (`login`), or instantly snapshot your active session (`capture`), completely eliminating manual JSON copying.
 - **Hardware/System OpenSSL Encryption:** Encrypts account tokens using `openssl enc -aes-256-cbc -pbkdf2` via secure subprocess execution.
 - **Cryptographic Integrity Verification:** Appends HMAC-SHA256 authentication tag (`ENC:<hmac>:<ciphertext>`) to detect any data tampering or corruption before decryption.
 - **Key Storage with Automatic Fallback:** Per-account 256-bit encryption keys are stored securely in the system keyring (`agy` service). If the system keyring is unavailable (e.g. headless Linux servers), keys automatically fallback to dedicated key files in `~/.gemini/antigravity-cli/keys/<account>.key` with strict `0600` permissions.
@@ -67,7 +68,7 @@ AGY_BIN="/home/faizen/.local/bin/agy"
 
 if [ "$1" = "account" ]; then
     exec python3 -m agy_account_switch.agy_account_cli "$@"
-elif [ "$1" = "add" ] || [ "$1" = "list" ] || [ "$1" = "switch" ] || [ "$1" = "remove" ]; then
+elif [ "$1" = "add" ] || [ "$1" = "list" ] || [ "$1" = "switch" ] || [ "$1" = "remove" ] || [ "$1" = "capture" ] || [ "$1" = "login" ]; then
     exec python3 -m agy_account_switch.agy_account_cli account "$@"
 else
     exec "$AGY_BIN" "$@"
@@ -84,7 +85,64 @@ Ensure `~/bin` or `~/.local/bin` is in your `$PATH`.
 
 ## Usage
 
-### 1. Adding an Account
+### 1. Browser-Based Authentication (Zero Token Copy-Paste)
+
+You never need to manually copy, inspect, or paste raw JSON tokens or secrets. The tool provides two native browser authentication workflows:
+
+#### A. Interactive Browser Sign-In (`login`)
+Sign into a brand new Google account directly from your browser. The switcher temporarily clears the active token and triggers the Antigravity browser OAuth flow. Once you approve the prompt in your browser, the credentials and associated Google email are automatically saved under `<name>`.
+
+```bash
+# Interactive login with automatic AES-256-CBC encryption
+agy_account account login work --encrypt
+
+# Plain unencrypted login
+agy_account account login work
+
+# Overwrite existing profile if already present
+agy_account account login work --encrypt --force
+```
+
+**Example Output:**
+```
+Starting browser authentication for account 'work'...
+Executing '/home/faizen/.local/bin/agy models' to trigger browser OAuth flow...
+Please visit the following URL to authenticate:
+https://accounts.google.com/o/oauth2/auth?...
+Successfully logged in and saved account 'work' [user@domain.com] (encrypted).
+```
+
+> [!NOTE]
+> If authentication is aborted or cancelled (e.g. browser closed or `Ctrl+C`), your previous active session is automatically restored without any data loss.
+
+#### B. Snapshot Active Browser Session (`capture`)
+If you have already signed into Antigravity via `agy` in your browser and want to save the active session into a named account profile:
+
+```bash
+# Capture active session with encryption
+agy_account account capture dev --encrypt
+
+# Plain unencrypted capture
+agy_account account capture dev
+
+# Overwrite an existing account
+agy_account account capture dev --force --encrypt
+```
+
+**Example Output:**
+```
+Captured active session into account 'dev' [developer@domain.com] (encrypted).
+```
+
+You can also use the `add` alias with `--from-current`:
+```bash
+agy_account account add dev --from-current --encrypt
+```
+
+> [!TIP]
+> Both `login` and `capture` automatically extract your Google email address from the OAuth token payload (`id_token_email`) for audit logging and confirmation display.
+
+### 2. Manual Token Addition (Direct / CI)
 
 To store an account token with AES-256-CBC encryption:
 
@@ -104,7 +162,7 @@ To overwrite an existing account:
 agy_account account add dev <new-token> --overwrite --encrypt
 ```
 
-### 2. Switching Active Account
+### 3. Switching Active Account
 
 Switching decrypts the token (if encrypted) and atomically writes the decrypted token into `~/.gemini/antigravity-cli/antigravity-oauth-token` with `0600` mode, updating `current_account.txt`:
 
@@ -112,7 +170,7 @@ Switching decrypts the token (if encrypted) and atomically writes the decrypted 
 agy_account account switch dev
 ```
 
-### 3. Listing Accounts
+### 4. Listing Accounts
 
 ```bash
 agy_account account list
@@ -124,7 +182,7 @@ dev
 personal
 ```
 
-### 4. Removing an Account
+### 5. Removing an Account
 
 Creates a backup of the token before unlinking it:
 
@@ -132,7 +190,7 @@ Creates a backup of the token before unlinking it:
 agy_account account remove old-account
 ```
 
-### 5. Native Antigravity Passthrough
+### 6. Native Antigravity Passthrough
 
 All other commands pass directly through to the native `agy` CLI binary:
 
@@ -173,7 +231,15 @@ Expected output:
 ```
 tests/test_account_switch.py::AccountSwitchTest::test_add_and_list PASSED
 tests/test_account_switch.py::AccountSwitchTest::test_add_encrypted_and_switch PASSED
+tests/test_account_switch.py::AccountSwitchTest::test_capture_account_encrypted PASSED
+tests/test_account_switch.py::AccountSwitchTest::test_capture_account_with_json_and_email PASSED
+tests/test_account_switch.py::AccountSwitchTest::test_capture_nonexistent_or_empty_token PASSED
+tests/test_account_switch.py::AccountSwitchTest::test_capture_overwrite_behavior PASSED
+tests/test_account_switch.py::AccountSwitchTest::test_cli_add_missing_token_error PASSED
+tests/test_account_switch.py::AccountSwitchTest::test_cli_capture_and_add_from_current PASSED
 tests/test_account_switch.py::AccountSwitchTest::test_invalid_account_name PASSED
+tests/test_account_switch.py::AccountSwitchTest::test_login_account_failure_restores_backup PASSED
+tests/test_account_switch.py::AccountSwitchTest::test_login_account_success PASSED
 tests/test_account_switch.py::AccountSwitchTest::test_overwrite PASSED
 tests/test_account_switch.py::AccountSwitchTest::test_switch_and_remove PASSED
 tests/test_account_switch.py::AccountSwitchTest::test_switch_nonexistent_account PASSED
